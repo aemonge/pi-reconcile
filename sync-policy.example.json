@@ -1,0 +1,24 @@
+{
+  "$comment": "Copy to your project root as sync-policy.json and edit. Anything omitted falls back to the defaults in policy.ts.",
+  "enabled": true,
+  "toolClasses": {
+    "code": ["write", "edit", "bash", "powershell", "apply_patch"],
+    "memory": ["mem_save", "mem_update", "mem_delete"],
+    "docs": ["read", "grep", "find", "ls"]
+  },
+  "graphify": {
+    "enabled": true,
+    "when": ["task_complete", "session_start_stale", "agent_end_dirty"],
+    "guard": "dirty_and_stale",
+    "minIntervalMs": 300000,
+    "codeExtensions": "ts|js|tsx|jsx|mjs|cjs|py|go|rs|java|rb|php|cs|c|cpp|h|hpp|sh|md"
+  },
+  "engram": {
+    "enabled": true,
+    "when": ["change_archive", "session_end"],
+    "mode": "cloud",
+    "project": "CHANGE-ME",
+    "minIntervalMs": 60000
+  },
+  "logDir": ".pi-reconcile/logs"
+}

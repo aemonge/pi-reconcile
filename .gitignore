@@ -1,0 +1,4 @@
+node_modules/
+.pi-reconcile/
+*.log
+.DS_Store
