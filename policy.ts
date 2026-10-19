@@ -37,6 +37,12 @@ export interface EngramConfig {
 
 export interface SyncPolicy {
   enabled: boolean;
+  /**
+   * Replay boundaries crossed while pi was closed (diff of the persisted
+   * snapshot vs a fresh one at session_start). Optional so v1 policy files
+   * without the key keep working; defaults to true.
+   */
+  crossSession?: boolean;
   /** Tool-name → class map. Tools in `code` set the dirty flag. */
   toolClasses: { code: string[]; memory: string[]; docs: string[] };
   graphify: GraphifyConfig;
@@ -47,6 +53,7 @@ export interface SyncPolicy {
 
 export const defaultPolicy: SyncPolicy = {
   enabled: true,
+  crossSession: true,
   toolClasses: {
     code: ["write", "edit", "bash", "powershell", "apply_patch"],
     memory: ["mem_save", "mem_update", "mem_delete"],
@@ -69,13 +76,13 @@ export const defaultPolicy: SyncPolicy = {
   logDir: ".pi-reconcile/logs",
 };
 
-function merge<T extends Record<string, unknown>>(base: T, over: Partial<T> | undefined): T {
+function merge<T extends object>(base: T, over: Partial<T> | undefined): T {
   if (!over) return base;
-  const out: Record<string, unknown> = { ...base };
+  const out = { ...base } as Record<string, unknown>;
   for (const [k, v] of Object.entries(over)) {
     if (v !== undefined) out[k] = v;
   }
-  return out as T;
+  return out as unknown as T;
 }
 
 /** Load `sync-policy.json` from the project root over the defaults. */
@@ -87,11 +94,11 @@ export async function loadPolicy(cwd: string): Promise<SyncPolicy> {
       await fs.readFile(`${cwd}/sync-policy.json`, "utf8"),
     ) as Partial<SyncPolicy>;
     return {
-      ...merge(defaults as unknown as Record<string, unknown>, raw as Record<string, unknown>),
+      ...merge(defaults, raw),
       toolClasses: merge(defaults.toolClasses, raw.toolClasses),
       graphify: merge(defaults.graphify, raw.graphify),
       engram: merge(defaults.engram, raw.engram),
-    } as SyncPolicy;
+    };
   } catch {
     return defaults; // no policy file, unreadable, or invalid → defaults
   }

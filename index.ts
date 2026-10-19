@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { defaultPolicy, loadPolicy, type SyncPolicy } from "./policy.ts";
 import * as boundaries from "./boundaries.ts";
 import { isGraphStale } from "./staleness.ts";
-import { lastRunAt, runBackground } from "./executors.ts";
+import { graphFreshUntilAt, hydrateGraphFreshUntil, hydrateLastRun, keyLogs, lastRunAt, loadPersistedState, logTailLine, runBackground, savePersistedState, setGraphFreshUntil, setPersistedSnapshot } from "./executors.ts";
 
 interface ReconcileState {
   policy: SyncPolicy;
@@ -31,6 +31,12 @@ interface ReconcileState {
 export default function reconcile(pi: ExtensionAPI) {
   const state: ReconcileState = { policy: defaultPolicy, dirty: false, snap: null };
 
+  /** Keep the runtime snapshot and the persisted snapshot in lockstep. */
+  const setSnap = (s: boundaries.BoundarySnapshot | null) => {
+    state.snap = s;
+    setPersistedSnapshot(s);
+  };
+
   const notify = (ctx: { hasUI: boolean; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }, msg: string) => {
     if (ctx.hasUI) ctx.ui.notify(msg, "info");
   };
@@ -38,10 +44,17 @@ export default function reconcile(pi: ExtensionAPI) {
   const graphify = (cwd: string) => {
     const g = state.policy.graphify;
     if (!g.enabled) return { started: false };
-    return runBackground(
+    const r = runBackground(
       "graphify", "graphify", ["update", "."],
       cwd, join(cwd, state.policy.logDir), g.minIntervalMs,
     );
+    if (r.started) {
+      // Single choke point for the staleness fresh-window: every spawn
+      // (boundary, session_start_stale, manual /reconcile) just rebuilt the
+      // graph — mtime can't move inside one cooldown interval.
+      setGraphFreshUntil(Date.now() + g.minIntervalMs);
+    }
+    return r;
   };
 
   const engramSync = (cwd: string) => {
@@ -66,14 +79,14 @@ export default function reconcile(pi: ExtensionAPI) {
     const fired: string[] = [];
     const now = await boundaries.snapshot(cwd);
     const d = state.snap ? boundaries.diff(state.snap, now) : { present: now.present, tasksCompleted: 0, newArchives: [] };
-    state.snap = now;
+    setSnap(now);
 
     const g = state.policy.graphify;
     if (g.enabled) {
       const taskBoundary = d.present && d.tasksCompleted > 0 && g.when.includes("task_complete");
       const fallback = !d.present && state.dirty && g.when.includes("agent_end_dirty");
       if (taskBoundary || fallback) {
-        const stale = g.guard === "none" ? true : await isGraphStale(cwd, g.codeExtensions);
+        const stale = g.guard === "none" ? true : await isGraphStale(cwd, g.codeExtensions, graphFreshUntilAt());
         const staleOk = stale !== false; // "unknown" → allow; cooldown protects us
         const dirtyOk = g.guard !== "dirty_and_stale" || state.dirty || taskBoundary;
         if (staleOk && dirtyOk) {
@@ -101,12 +114,28 @@ export default function reconcile(pi: ExtensionAPI) {
     const cwd = ctx.cwd;
     state.policy = await loadPolicy(cwd);
     if (!state.policy.enabled) return;
-    state.snap = await boundaries.snapshot(cwd);
     state.dirty = false;
+
+    // Cooldowns survive restarts; cross-session replay fires boundaries
+    // crossed while pi was closed. Missing/corrupt state → skip
+    // silently (fail-open).
+    const persisted = await loadPersistedState(cwd);
+    hydrateLastRun(persisted?.lastRun ?? {});
+    hydrateGraphFreshUntil(persisted?.graphFreshUntil);
+    if (persisted && state.policy.crossSession !== false) {
+      setSnap(persisted.snapshot); // diff baseline; applyBoundaries snapshots fresh
+      try {
+        await applyBoundaries(cwd, ctx);
+      } catch {
+        /* fail-open: replay errors never reach the session */
+      }
+    } else {
+      setSnap(await boundaries.snapshot(cwd));
+    }
 
     const g = state.policy.graphify;
     if (g.enabled && g.when.includes("session_start_stale")) {
-      const stale = await isGraphStale(cwd, g.codeExtensions);
+      const stale = await isGraphStale(cwd, g.codeExtensions, graphFreshUntilAt());
       if (stale === true) {
         const r = graphify(cwd);
         if (r.started) notify(ctx, "pi-reconcile: stale graph → graphify update");
@@ -115,10 +144,14 @@ export default function reconcile(pi: ExtensionAPI) {
   });
 
   pi.on("tool_result", (event) => {
+    if (!state.policy.enabled) return; // disabled policy: no dirty tracking at all
     if (state.policy.toolClasses.code.includes(event.toolName)) state.dirty = true;
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    // Reload first so mid-session sync-policy.json edits are live within one
+    // run end (one JSON read per run — accepted cost, plan item 4).
+    state.policy = await loadPolicy(ctx.cwd);
     if (!state.policy.enabled) return;
     try {
       await applyBoundaries(ctx.cwd, ctx);
@@ -128,17 +161,28 @@ export default function reconcile(pi: ExtensionAPI) {
     state.dirty = false;
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
+    // Teardown fires for quit AND reload/new/resume/fork — the latter are
+    // runtime switches, not session ends, but state must persist on any of
+    // them, so the diff + save below run for every reason.
+    console.log(`[pi-reconcile] session_shutdown reason=${event.reason}`);
     if (!state.policy.enabled) return;
     try {
       // Final diff catches boundaries that landed outside agent runs
       await applyBoundaries(ctx.cwd, ctx);
-      if (state.policy.engram.enabled && state.policy.engram.when.includes("session_end")) {
+      // Session_end fallback is for actual quits only — switches/reloads
+      // resume in another runtime and re-fire their own boundaries.
+      // DECIDED INTERPRETATION (plan-a wording "quit OR cooldown" was
+      // ambiguous): strict quit-gate; runBackground's cooldown stays the
+      // inherent second guard.
+      if (event.reason === "quit" && state.policy.engram.enabled && state.policy.engram.when.includes("session_end")) {
         engramSync(ctx.cwd);
       }
     } catch {
       /* fail-open */
     }
+    // Persist {snapshot, lastRun} for the next session — best-effort, fail-open.
+    await savePersistedState(ctx.cwd);
   });
 
   pi.registerCommand("reconcile", {
@@ -158,6 +202,14 @@ export default function reconcile(pi: ExtensionAPI) {
             `openspec=${s?.present ? `yes (${s.checkedTasks} checked)` : "no"} · ` +
             `graphify last=${ago("graphify")} · engram last=${ago("engram")}`,
         );
+        const logDir = join(cwd, state.policy.logDir);
+        const logsOf = (key: string): string => {
+          const names = keyLogs(logDir, key).slice(-3); // newest 3, oldest → newest
+          if (names.length === 0) return `${key}: logs: none`;
+          const tail = logTailLine(join(logDir, names[names.length - 1]));
+          return `${key}: ${names.join(", ")}${tail ? ` · last: ${tail}` : ""}`;
+        };
+        notify(ctx, `pi-reconcile logs: ${logsOf("graphify")} · ${logsOf("engram")}`);
         return;
       }
       const rg = graphify(cwd);

@@ -1,12 +1,13 @@
 {
   "name": "pi-reconcile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reconcile derived artifacts (graphify graph, engram memory) at openspec work boundaries. Fail-open by design; never blocks work.",
   "type": "module",
   "private": true,
   "main": "index.ts",
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "node scripts/test-boundaries.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
