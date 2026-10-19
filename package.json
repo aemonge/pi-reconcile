@@ -3,7 +3,27 @@
   "version": "0.2.0",
   "description": "Reconcile derived artifacts (graphify graph, engram memory) at openspec work boundaries. Fail-open by design; never blocks work.",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/aemonge/pi-reconcile.git"
+  },
+  "files": [
+    "index.ts",
+    "boundaries.ts",
+    "executors.ts",
+    "policy.ts",
+    "staleness.ts",
+    "sync-policy.example.json",
+    "README.md",
+    "LICENSE",
+    "justfile"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "main": "index.ts",
   "scripts": {
     "check": "tsc --noEmit",

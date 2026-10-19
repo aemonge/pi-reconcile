@@ -19,15 +19,20 @@ no openspec in repo             →  dirty flag → graphify at agent_end
 ## Install
 
 ```bash
-# develop directly from a checkout:
-git clone https://github.com/<your-github-user>/pi-reconcile
+pi install npm:pi-reconcile
+```
+
+Verify with `pi list`; configure via `sync-policy.json` (below) — see the
+Policy section. To develop from a checkout instead:
+
+```bash
+git clone https://github.com/aemonge/pi-reconcile
 pi --extension ./pi-reconcile
 ```
 
-**npm distribution is not wired yet.** `pi install` ignores `package.json`
-`"main"` and requires a `pi.extensions` manifest, which this package does
-not ship (planned — see `plans/plan-b-engine.md`, distribution step). Until
-then, install from a checkout as above.
+The npm package ships raw TypeScript loaded via jiti (no build step), with
+a `pi.extensions` manifest — the same distribution shape as
+`@aemonge-dev/pi-openspec-gate` and `gentle-engram`.
 
 Zero runtime npm dependencies. Verified against
 `@earendil-works/pi-coding-agent@1.3.0` extension API (`session_start`,
@@ -171,11 +176,12 @@ Design facts worth knowing before you change things:
 
 ## Future-proofing
 
-The policy file is the asset; the extension is a sacrificial layer. If the
-Pi extension API grows durable hooks or a distribution manifest
-(`pi.extensions`), the boundaries/executors translate mechanically and this
-package re-shapes without losing configuration. No such target exists in
-1.3.0 — this is a direction, not a promise.
+The policy file is the asset; the extension is a sacrificial layer. The
+`pi.extensions` manifest ships (v0.2.0+), so `pi install` is the
+distribution path; if the Pi extension API grows durable hooks, the
+boundaries/executors translate mechanically and this package re-shapes
+without losing configuration. No such target exists in 1.3.0 — this is a
+direction, not a promise.
 
 ## License
 
